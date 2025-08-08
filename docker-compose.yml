@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  api:
+    container_name: mvd-api
+    build:
+      context: ./backend
+    environment:
+      - DEFAULT_DOWNLOAD_DIR=${DEFAULT_DOWNLOAD_DIR}
+    volumes:
+      - ${DEFAULT_DOWNLOAD_DIR}:/downloads
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    container_name: mvd-web
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=${VITE_API_URL}
+    environment:
+      - VITE_API_URL=${VITE_API_URL}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
