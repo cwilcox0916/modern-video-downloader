@@ -3,7 +3,7 @@ import React from "react";
 export type QueueItem = {
   id: string;
   url: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   title?: string;
   filepath?: string;
   error?: string;
@@ -23,6 +23,7 @@ type QueuePaneProps = {
   onStart: () => void;
   onClear: () => void;
   queue: QueueItem[];
+  onCancel?: (jobId: string) => void;
 };
 
 const QueuePane: React.FC<QueuePaneProps> = ({
@@ -32,6 +33,7 @@ const QueuePane: React.FC<QueuePaneProps> = ({
   onStart,
   onClear,
   queue,
+  onCancel,
 }) => {
   const apiBase: string = (import.meta.env.VITE_API_URL as string) || "/";
   const joinApiUrl = (path: string) => {
@@ -169,13 +171,26 @@ const QueuePane: React.FC<QueuePaneProps> = ({
                 className="rounded-lg border border-white/10 bg-neutral-950/50 p-3"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs px-2 py-0.5 rounded-full border border-white/10">
+                  <span className={`text-xs px-2 py-0.5 rounded-full border border-white/10 ${
+                    item.status === 'cancelled' ? 'text-orange-300 border-orange-300/30' : ''
+                  }`}>
                     {item.status}
                   </span>
                   {item.title && (
                     <span className="truncate text-xs text-neutral-400" title={item.title}>
                       {item.title}
                     </span>
+                  )}
+                  {(item.status === "queued" || item.status === "running") && onCancel && (
+                    <button
+                      type="button"
+                      className="ml-auto px-2 py-1 rounded bg-red-600 text-white text-xs shadow hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400/50"
+                      onClick={() => onCancel(item.id)}
+                      aria-label="Cancel download"
+                      title="Cancel download"
+                    >
+                      Stop
+                    </button>
                   )}
                 </div>
                 <div className="mt-1 text-xs text-neutral-400 truncate" title={item.url}>

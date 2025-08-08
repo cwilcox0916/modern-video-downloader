@@ -134,6 +134,21 @@ const App: React.FC = () => {
     setQueueText("");
   }, []);
 
+  const handleCancelJob = useCallback(async (jobId: string) => {
+    setError("");
+    try {
+      const res = await fetch(joinApiUrl(`/api/jobs/${jobId}`), {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.detail || `Error ${res.status}`);
+      }
+    } catch (e: any) {
+      setError(e?.message || "Failed to cancel job");
+    }
+  }, []);
+
   // Poll queue statuses
   useEffect(() => {
     let alive = true;
@@ -196,6 +211,7 @@ const App: React.FC = () => {
               onStart={handleStartQueue}
               onClear={handleClearQueueText}
               queue={queue}
+              onCancel={handleCancelJob}
             />
           </div>
 

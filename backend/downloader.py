@@ -1,6 +1,7 @@
 import asyncio
 import os
 import traceback
+import glob
 from typing import Any, Dict, List, Optional, Tuple, Callable
 from uuid import uuid4
 
@@ -109,6 +110,8 @@ async def download(
         # Progress hook is invoked frequently during download
         # We pass through yt-dlp's progress dict to our callback
         **({"progress_hooks": [progress_callback]} if progress_callback else {}),
+        # Enable progress when we have a callback - disable quiet and noprogress
+        **({"noprogress": False, "quiet": False} if progress_callback else {}),
     }
 
     def run_sync_download() -> Dict[str, Any]:
@@ -134,6 +137,7 @@ QUEUE: List[Dict[str, Any]] = []
 _QUEUE_LOCK = asyncio.Lock()
 _RUNNER_TASK: Optional[asyncio.Task] = None
 _STOP_SIGNAL = False
+_CANCELLED_JOBS: set[str] = set()  # Track cancelled job IDs
 
 
 def _ensure_runner() -> None:
@@ -158,8 +162,23 @@ async def _runner() -> None:
             await asyncio.sleep(0.5)
             continue
 
+        # Check if job was cancelled before starting
+        job_id = job.get("id")
+        if job_id in _CANCELLED_JOBS:
+            async with _QUEUE_LOCK:
+                job["status"] = "cancelled"
+                job["error"] = "Download cancelled by user"
+                _CANCELLED_JOBS.discard(job_id)
+            continue
+
         try:
             def on_progress(p: Dict[str, Any]) -> None:
+                # Check for cancellation during download
+                if job_id in _CANCELLED_JOBS:
+                    # yt-dlp doesn't have a clean cancellation mechanism
+                    # We'll let the download complete but mark it as cancelled
+                    return
+
                 # p can include: status, downloaded_bytes, total_bytes, elapsed, speed, eta, fragment_index, fragment_count
                 prog: Dict[str, Any] = {}
                 status = p.get("status")
@@ -185,33 +204,35 @@ async def _runner() -> None:
                     prog["eta"] = eta
 
                 # Update job progress snapshot
-                try:
-                    # Avoid await inside yt-dlp thread callback; do best-effort non-blocking update
-                    loop = asyncio.get_event_loop()
-                    loop.create_task(_save_progress(job["id"], prog))
-                except RuntimeError:
-                    # Fallback if no running loop
-                    pass
+                # Store progress in the job dict directly (thread-safe enough for our use case)
+                # The main event loop will pick this up via the queue polling
+                job["progress"] = prog
 
             result = await download(job["url"], progress_callback=on_progress)
+            
+            # Check if cancelled after download completed
             async with _QUEUE_LOCK:
-                job["result"] = result
-                job["status"] = "done"
+                if job_id in _CANCELLED_JOBS:
+                    job["status"] = "cancelled"
+                    job["error"] = "Download cancelled by user"
+                    _CANCELLED_JOBS.discard(job_id)
+                    # Clean up all downloaded and partial files
+                    _cleanup_download_files(job.get("url", ""), result)
+                else:
+                    job["result"] = result
+                    job["status"] = "done"
         except Exception as e:
             async with _QUEUE_LOCK:
-                job["error"] = str(e)
-                job["traceback"] = traceback.format_exc()
-                job["status"] = "error"
-
-
-async def _save_progress(job_id: str, progress: Dict[str, Any]) -> None:
-    async with _QUEUE_LOCK:
-        for item in QUEUE:
-            if item.get("id") == job_id:
-                existing = item.get("progress") or {}
-                existing.update(progress)
-                item["progress"] = existing
-                break
+                if job_id in _CANCELLED_JOBS:
+                    job["status"] = "cancelled"
+                    job["error"] = "Download cancelled by user"
+                    _CANCELLED_JOBS.discard(job_id)
+                    # Clean up any partial files even on error
+                    _cleanup_download_files(job.get("url", ""))
+                else:
+                    job["error"] = str(e)
+                    job["traceback"] = traceback.format_exc()
+                    job["status"] = "error"
 
 
 def add_to_queue(urls: List[str]) -> List[str]:
@@ -261,4 +282,96 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         if item.get("id") == job_id:
             return item
     return None
+
+
+def _cleanup_download_files(url: str, result: Optional[Dict[str, Any]] = None) -> None:
+    """
+    Clean up all files related to a download, including partial and temporary files.
+    """
+    try:
+        # Extract video ID from URL for pattern matching
+        from yt_dlp.utils import extract_video_id
+        video_id = None
+        try:
+            video_id = extract_video_id(url)
+        except:
+            pass
+        
+        files_to_clean = []
+        
+        # Clean up the completed file if provided
+        if result and result.get("filepath"):
+            filepath = result["filepath"]
+            if os.path.exists(filepath):
+                files_to_clean.append(filepath)
+        
+        # Clean up partial and temporary files in download directory
+        if video_id:
+            # yt-dlp creates various temporary files during download:
+            # - *.part files (partial downloads)
+            # - *.temp files (temporary files)
+            # - *.ytdl files (metadata)
+            # - fragments for segmented downloads
+            patterns = [
+                f"*{video_id}*.part",
+                f"*{video_id}*.temp", 
+                f"*{video_id}*.ytdl",
+                f"*{video_id}*.f*",  # fragment files
+                f"*{video_id}*.webm.part",
+                f"*{video_id}*.mp4.part",
+                f"*{video_id}*.m4a.part",
+            ]
+            
+            for pattern in patterns:
+                pattern_path = os.path.join(DEFAULT_DOWNLOAD_DIR, pattern)
+                for file_path in glob.glob(pattern_path):
+                    if os.path.isfile(file_path):
+                        files_to_clean.append(file_path)
+        
+        # Also look for any .part or .temp files in the download directory that might be from this download
+        # This is a fallback in case we can't extract the video ID
+        temp_patterns = [
+            os.path.join(DEFAULT_DOWNLOAD_DIR, "*.part"),
+            os.path.join(DEFAULT_DOWNLOAD_DIR, "*.temp"),
+            os.path.join(DEFAULT_DOWNLOAD_DIR, "*.ytdl"),
+        ]
+        
+        for pattern in temp_patterns:
+            for file_path in glob.glob(pattern):
+                if os.path.isfile(file_path):
+                    # Check if file was modified recently (within last 60 seconds)
+                    # This helps ensure we only clean up files from current download
+                    import time
+                    if time.time() - os.path.getmtime(file_path) < 60:
+                        files_to_clean.append(file_path)
+        
+        # Remove duplicates and clean up files
+        for file_path in set(files_to_clean):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass  # Ignore individual file cleanup errors
+                
+    except Exception:
+        # Ignore all cleanup errors - cleanup is best effort
+        pass
+
+
+def cancel_job(job_id: str) -> bool:
+    """Cancel a job by ID. Returns True if job was found and cancelled."""
+    for item in QUEUE:
+        if item.get("id") == job_id:
+            status = item.get("status")
+            if status in ("queued", "running"):
+                _CANCELLED_JOBS.add(job_id)
+                if status == "queued":
+                    # If queued, immediately mark as cancelled
+                    item["status"] = "cancelled"
+                    item["error"] = "Download cancelled by user"
+                    # Clean up any potential files immediately for queued jobs
+                    _cleanup_download_files(item.get("url", ""))
+                return True
+            # Job already completed, errored, or cancelled
+            return False
+    return False
 

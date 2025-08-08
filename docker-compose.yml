@@ -5,6 +5,8 @@ services:
     container_name: mvd-api
     build:
       context: ./backend
+      args:
+        - PIP_NO_CACHE_DIR=1
     environment:
       - DEFAULT_DOWNLOAD_DIR=${DEFAULT_DOWNLOAD_DIR}
     volumes:

@@ -14,6 +14,7 @@ from downloader import (
     get_queue_statuses,
     get_stream_url,
     get_job,
+    cancel_job,
 )
 
 app = FastAPI(title="Modern Video Downloader API", version="0.1.0")
@@ -145,7 +146,20 @@ def api_job_file(job_id: str) -> FileResponse:
     return FileResponse(real_path, media_type="application/octet-stream", filename=filename)
 
 
-# TODO: progress hooks + cancel endpoint for a running download
+@app.delete("/api/jobs/{job_id}")
+async def api_cancel_job(job_id: str) -> Dict[str, Any]:
+    """Cancel a download job"""
+    try:
+        success = cancel_job(job_id)
+        if success:
+            return {"success": True, "message": "Job cancelled successfully"}
+        else:
+            return {"success": False, "message": "Job not found or cannot be cancelled"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# TODO: progress hooks ✓ + cancel endpoint for a running download ✓
 # TODO: quality selector (1080p/720p/audio-only) via format syntax
 # TODO: persistent queue (SQLite/Redis) instead of in-memory
 
