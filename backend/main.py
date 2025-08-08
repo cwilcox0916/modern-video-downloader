@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
+import os
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -11,6 +13,7 @@ from downloader import (
     get_best_thumbnail,
     get_queue_statuses,
     get_stream_url,
+    get_job,
 )
 
 app = FastAPI(title="Modern Video Downloader API", version="0.1.0")
@@ -116,6 +119,30 @@ async def api_proxy(request: Request) -> Response:
         headers["accept-ranges"] = accept_ranges
 
     return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+@app.get("/api/jobs/{job_id}/file")
+def api_job_file(job_id: str) -> FileResponse:
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "done":
+        raise HTTPException(status_code=409, detail="Job not completed yet")
+
+    result = job.get("result") or {}
+    path = result.get("filepath")
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Security: ensure file is within configured downloads dir
+    downloads_root = os.path.realpath(os.getenv("DEFAULT_DOWNLOAD_DIR", "/downloads"))
+    real_path = os.path.realpath(path)
+    if not real_path.startswith(downloads_root):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    filename = os.path.basename(real_path)
+    # Let starlette set Content-Disposition: attachment; filename="..."
+    return FileResponse(real_path, media_type="application/octet-stream", filename=filename)
 
 
 # TODO: progress hooks + cancel endpoint for a running download

@@ -1,7 +1,7 @@
 import asyncio
 import os
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from uuid import uuid4
 
 from yt_dlp import YoutubeDL
@@ -95,15 +95,20 @@ def get_stream_url(url: str) -> Optional[str]:
     return _pick_stream_url_from_info(info)
 
 
-async def download(url: str, format_selector: str = "bv*+ba/b") -> Dict[str, Any]:
+async def download(
+    url: str,
+    format_selector: str = "bv*+ba/b",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
     if not url:
         raise ValueError("URL is required")
 
     opts: Dict[str, Any] = {
         **YTDLP_COMMON_OPTS,
         "format": format_selector,
-        # TODO: progress hooks for live progress and cancel
-        # "progress_hooks": [progress_hook_function],
+        # Progress hook is invoked frequently during download
+        # We pass through yt-dlp's progress dict to our callback
+        **({"progress_hooks": [progress_callback]} if progress_callback else {}),
     }
 
     def run_sync_download() -> Dict[str, Any]:
@@ -154,7 +159,41 @@ async def _runner() -> None:
             continue
 
         try:
-            result = await download(job["url"])
+            def on_progress(p: Dict[str, Any]) -> None:
+                # p can include: status, downloaded_bytes, total_bytes, elapsed, speed, eta, fragment_index, fragment_count
+                prog: Dict[str, Any] = {}
+                status = p.get("status")
+                if status:
+                    prog["status"] = status
+                downloaded = int(p.get("downloaded_bytes") or 0)
+                total = int(
+                    p.get("total_bytes")
+                    or p.get("total_bytes_estimate")
+                    or 0
+                )
+                if downloaded:
+                    prog["downloaded_bytes"] = downloaded
+                if total:
+                    prog["total_bytes"] = total
+                if total > 0:
+                    prog["progress_pct"] = max(0.0, min(100.0, downloaded * 100.0 / total))
+                speed = p.get("speed")
+                if speed:
+                    prog["speed"] = speed
+                eta = p.get("eta")
+                if eta is not None:
+                    prog["eta"] = eta
+
+                # Update job progress snapshot
+                try:
+                    # Avoid await inside yt-dlp thread callback; do best-effort non-blocking update
+                    loop = asyncio.get_event_loop()
+                    loop.create_task(_save_progress(job["id"], prog))
+                except RuntimeError:
+                    # Fallback if no running loop
+                    pass
+
+            result = await download(job["url"], progress_callback=on_progress)
             async with _QUEUE_LOCK:
                 job["result"] = result
                 job["status"] = "done"
@@ -163,6 +202,16 @@ async def _runner() -> None:
                 job["error"] = str(e)
                 job["traceback"] = traceback.format_exc()
                 job["status"] = "error"
+
+
+async def _save_progress(job_id: str, progress: Dict[str, Any]) -> None:
+    async with _QUEUE_LOCK:
+        for item in QUEUE:
+            if item.get("id") == job_id:
+                existing = item.get("progress") or {}
+                existing.update(progress)
+                item["progress"] = existing
+                break
 
 
 def add_to_queue(urls: List[str]) -> List[str]:
@@ -179,6 +228,7 @@ def add_to_queue(urls: List[str]) -> List[str]:
                 "id": job_id,
                 "url": url,
                 "status": "queued",
+                "progress": {"progress_pct": 0.0},
                 "result": None,
                 "error": None,
             }
@@ -200,7 +250,15 @@ def get_queue_statuses() -> List[Dict[str, Any]]:
             "title": (item.get("result") or {}).get("title"),
             "filepath": (item.get("result") or {}).get("filepath"),
             "error": item.get("error"),
+            "progress": item.get("progress"),
         }
         for item in QUEUE
     ]
+
+
+def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    for item in QUEUE:
+        if item.get("id") == job_id:
+            return item
+    return None
 

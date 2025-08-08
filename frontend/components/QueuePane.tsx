@@ -7,6 +7,13 @@ export type QueueItem = {
   title?: string;
   filepath?: string;
   error?: string;
+  progress?: {
+    progress_pct?: number;
+    downloaded_bytes?: number;
+    total_bytes?: number;
+    speed?: number;
+    eta?: number;
+  };
 };
 
 type QueuePaneProps = {
@@ -26,6 +33,83 @@ const QueuePane: React.FC<QueuePaneProps> = ({
   onClear,
   queue,
 }) => {
+  const apiBase: string = (import.meta.env.VITE_API_URL as string) || "/";
+  const joinApiUrl = (path: string) => {
+    try {
+      return new URL(path.replace(/^\//, ""), apiBase).toString();
+    } catch {
+      return (apiBase.endsWith("/") ? apiBase : apiBase + "/") + path.replace(/^\//, "");
+    }
+  };
+
+  const handleSaveToPC = async (item: QueueItem) => {
+    try {
+      const url = joinApiUrl(`/api/jobs/${item.id}/file`);
+      const suggestedName = (item.filepath?.split(/[/\\\\]/).pop() || item.title || "download.mp4") as string;
+
+      // Prefer File System Access API when available
+      // @ts-ignore
+      if (window.showSaveFilePicker) {
+        // @ts-ignore
+        const fileHandle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [
+            {
+              description: "Media file",
+              accept: { "application/octet-stream": [".mp4", ".mkv", ".webm", ".mp3", ".m4a"] },
+            },
+          ],
+        });
+        const writable = await fileHandle.createWritable();
+        const resp = await fetch(url);
+        if (!resp.ok || !resp.body) throw new Error(`Download failed (${resp.status})`);
+        // Stream to disk
+        await resp.body.pipeTo(writable);
+        return;
+      }
+
+      // Fallback: open in a new tab; browser will prompt or auto-save based on settings
+      const a = document.createElement("a");
+      a.href = url;
+      a.rel = "noopener noreferrer";
+      a.target = "_blank";
+      a.download = suggestedName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      // No centralized error UI here; the queue poller remains unaffected
+      // Could integrate with a toast system if added later
+      console.error(err);
+    }
+  };
+  const renderProgress = (item: QueueItem) => {
+    const pct = Math.max(0, Math.min(100, Math.floor(item.progress?.progress_pct ?? 0)));
+    const label = `${pct}%`;
+    return (
+      <div className="mt-2">
+        <div
+          className="w-full h-2 bg-neutral-800 rounded-full overflow-hidden border border-white/10"
+          aria-label={`Progress ${label}`}
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+        >
+          <div className="h-full bg-gradient-to-r from-sky-500 to-emerald-500" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="mt-1 flex justify-between text-[11px] text-neutral-400">
+          <span>{label}</span>
+          <span>
+            {item.progress?.downloaded_bytes ? Math.round((item.progress.downloaded_bytes / (1024 * 1024)) * 10) / 10 : 0}
+            MB
+            {item.progress?.total_bytes ? ` / ${Math.round((item.progress.total_bytes / (1024 * 1024)) * 10) / 10}MB` : ""}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <section className="rounded-2xl bg-neutral-900/60 border border-white/10 shadow-lg overflow-hidden">
       <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
@@ -100,6 +184,28 @@ const QueuePane: React.FC<QueuePaneProps> = ({
                 {item.filepath && (
                   <div className="mt-1 text-xs text-emerald-300 truncate" title={item.filepath}>
                     {item.filepath}
+                  </div>
+                )}
+                {item.status === "running" && renderProgress(item)}
+                {item.status === "done" && (
+                  <div className="mt-2 flex justify-end gap-2">
+                    <a
+                      href={joinApiUrl(`/api/jobs/${item.id}/file`)}
+                      className="inline-flex items-center px-3 py-1.5 rounded-lg bg-neutral-800 text-neutral-200 border border-white/10 text-sm shadow hover:bg-neutral-800/80 focus:outline-none focus:ring-2 focus:ring-neutral-600/50"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="Download using browser"
+                    >
+                      Browser Download
+                    </a>
+                    <button
+                      type="button"
+                      className="inline-flex items-center px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-pink-500 text-white text-sm shadow hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+                      onClick={() => handleSaveToPC(item)}
+                      aria-label="Save to a chosen location on your computer"
+                    >
+                      Save As…
+                    </button>
                   </div>
                 )}
                 {item.error && (
