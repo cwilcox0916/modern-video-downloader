@@ -78,6 +78,33 @@ VITE_API_URL=http://mvd-api:8000/
 - `DEFAULT_DOWNLOAD_DIR` is mounted into the API container at `/downloads`.
 - `VITE_API_URL` is used by the frontend at build time to call the API. In `docker-compose.yml`, it is passed as a build arg and environment variable to the web service.
 
+### Windows Quickstart
+
+Test locally with Docker Desktop on Windows:
+
+1) Create `.env` in the project root with your downloads folder and API base:
+
+```ini
+DEFAULT_DOWNLOAD_DIR=C:\\Users\\<you>\\Downloads
+VITE_API_URL=http://localhost:8000/
+```
+
+2) Build and start:
+
+```powershell
+docker compose build
+docker compose up -d
+```
+
+3) Open the app:
+
+- UI: `http://localhost:5173`
+- API: `http://localhost:8000`
+
+Notes:
+- The compose file mounts `${DEFAULT_DOWNLOAD_DIR}` into the API container at `/downloads`. Using a Windows path works; Docker Desktop translates it to a bind mount.
+- If you see a warning that the `version` attribute is obsolete, it is safe to ignore; modern Compose no longer requires it.
+
 ## Development
 
 - Backend (local):

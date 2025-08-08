@@ -13,6 +13,12 @@ const joinApiUrl = (path: string) => {
   }
 };
 
+const toProxyUrl = (rawUrl: string) => {
+  if (!rawUrl) return "";
+  const encoded = encodeURIComponent(rawUrl);
+  return joinApiUrl(`/api/proxy?url=${encoded}`);
+};
+
 const App: React.FC = () => {
   const [url, setUrl] = useState<string>("");
   const [thumbnailUrl, setThumbnailUrl] = useState<string>("");
@@ -62,8 +68,9 @@ const App: React.FC = () => {
         throw new Error(j?.detail || `Error ${res.status}`);
       }
       const data = await res.json();
-      setStreamUrl(data.stream_url || "");
-      if (!data.stream_url) throw new Error("No stream URL returned");
+      const direct = data.stream_url || "";
+      setStreamUrl(direct ? toProxyUrl(direct) : "");
+      if (!direct) throw new Error("No stream URL returned");
     } catch (e: any) {
       setError(e?.message || "Failed to fetch preview");
     }

@@ -30,7 +30,6 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ thumbnailUrl, streamUrl }) =>
             alt="Video thumbnail"
             className="w-full h-64 object-contain bg-neutral-950/50 rounded-xl"
             loading="eager"
-            crossOrigin="anonymous"
           />
         ) : (
           <div className="w-full h-64 rounded-xl bg-neutral-950/60 border border-white/5 grid place-items-center text-neutral-500">
@@ -46,7 +45,6 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ thumbnailUrl, streamUrl }) =>
             controls
             preload="metadata"
             className="w-full rounded-xl border border-white/10 bg-black"
-            crossOrigin="anonymous"
           />
         ) : (
           <div className="w-full h-64 rounded-xl bg-neutral-950/60 border border-white/5 grid place-items-center text-neutral-500">

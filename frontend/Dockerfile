@@ -2,14 +2,10 @@
 FROM node:20-alpine AS build
 
 WORKDIR /app
-COPY package.json /app/package.json
+COPY package*.json /app/
 
-# Copy lockfile if present (improves reproducibility)
-# If using npm:
-# COPY package-lock.json /app/package-lock.json
-# If using pnpm/yarn, add the corresponding lockfile above.
-
-RUN npm ci
+# Use npm ci when a lockfile exists, otherwise fall back to npm install
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . /app
 

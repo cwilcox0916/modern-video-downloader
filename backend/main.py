@@ -1,8 +1,9 @@
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import httpx
 
 from downloader import (
     _info,
@@ -60,7 +61,7 @@ def api_preview(body: UrlBody) -> Dict[str, Optional[str]]:
 
 
 @app.post("/api/download")
-def api_download(body: UrlBody) -> Dict[str, Any]:
+async def api_download(body: UrlBody) -> Dict[str, Any]:
     try:
         job_ids = add_to_queue([body.url])
         return {"queued": len(job_ids), "job_ids": job_ids}
@@ -69,7 +70,7 @@ def api_download(body: UrlBody) -> Dict[str, Any]:
 
 
 @app.post("/api/queue/add")
-def api_queue_add(body: UrlsBody) -> Dict[str, Any]:
+async def api_queue_add(body: UrlsBody) -> Dict[str, Any]:
     try:
         job_ids = add_to_queue(body.urls or [])
         return {"queued": len(job_ids), "job_ids": job_ids}
@@ -83,6 +84,38 @@ def api_queue() -> Dict[str, Any]:
         return {"queue": get_queue_statuses()}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/proxy")
+async def api_proxy(request: Request) -> Response:
+    """
+    Simple streaming proxy to work around browser CORS on third-party media URLs.
+    Usage: /api/proxy?url=<encoded_target_url>
+    """
+    target_url = request.query_params.get("url")
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Missing url")
+
+    # Stream the response and forward essential headers
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        try:
+            upstream = await client.get(target_url)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    # Pass through content-type and status code; do not add CORS headers here since frontend and API share origin
+    headers = {}
+    ct = upstream.headers.get("content-type")
+    if ct:
+        headers["content-type"] = ct
+    cl = upstream.headers.get("content-length")
+    if cl:
+        headers["content-length"] = cl
+    accept_ranges = upstream.headers.get("accept-ranges")
+    if accept_ranges:
+        headers["accept-ranges"] = accept_ranges
+
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
 
 
 # TODO: progress hooks + cancel endpoint for a running download
